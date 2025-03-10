@@ -19,7 +19,7 @@ function App() {
     if (!modelLoading) {
       setModelLoading(true);
       inferEngine
-        .startWorker("coco", 3, "rf_EsVTlbAbaZPLmAFuQwWoJgFpMU82")
+        .startWorker("floral-shop-visual-checkout", 3, "zEzlBHBMyhcy70TqD4tF")
         .then((id) => setModelWorkerId(id));
     }
   }, [inferEngine, modelLoading]);
