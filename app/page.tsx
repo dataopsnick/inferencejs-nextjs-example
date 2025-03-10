@@ -2,18 +2,18 @@
 
 import logo from "./logo.svg";
 import "./style.css";
-import { InferenceEngine, CVImage } from "inferencejs";
+import { InferenceEngine, CVImage, Prediction } from "inferencejs";
 import { useEffect, useRef, useState, useMemo } from "react";
 
 function App() {
   const inferEngine = useMemo(() => {
     return new InferenceEngine();
   }, []);
-  const [modelWorkerId, setModelWorkerId] = useState(null);
+  const [modelWorkerId, setModelWorkerId] = useState<string | null>(null);
   const [modelLoading, setModelLoading] = useState(false);
 
-  const videoRef = useRef();
-  const canvasRef = useRef();
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
     if (!modelLoading) {
@@ -42,36 +42,50 @@ function App() {
     };
 
     navigator.mediaDevices.getUserMedia(constraints).then((stream) => {
-      videoRef.current.srcObject = stream;
-      videoRef.current.onloadedmetadata = function () {
-        videoRef.current.play();
-      };
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.onloadedmetadata = function () {
+          if (videoRef.current) {
+            videoRef.current.play();
+          }
+        };
 
-      videoRef.current.onplay = () => {
-        var ctx = canvasRef.current.getContext("2d");
+        videoRef.current.onplay = () => {
+          if (!canvasRef.current || !videoRef.current) return;
+          
+          var ctx = canvasRef.current.getContext("2d");
+          if (!ctx) return;
 
-        var height = videoRef.current.videoHeight;
-        var width = videoRef.current.videoWidth;
+          var height = videoRef.current.videoHeight;
+          var width = videoRef.current.videoWidth;
 
-        videoRef.current.width = width;
-        videoRef.current.height = height;
+          videoRef.current.width = width;
+          videoRef.current.height = height;
 
-        canvasRef.current.width = width;
-        canvasRef.current.height = height;
+          canvasRef.current.width = width;
+          canvasRef.current.height = height;
 
-        ctx.scale(1, 1);
+          ctx.scale(1, 1);
 
-        detectFrame();
-      };
+          detectFrame();
+        };
+      }
     });
   };
 
   const detectFrame = () => {
-    if (!modelWorkerId) setTimeout(detectFrame, 100 / 3);
+    if (!modelWorkerId || !videoRef.current || !canvasRef.current) {
+      setTimeout(detectFrame, 100 / 3);
+      return;
+    }
 
     const img = new CVImage(videoRef.current);
-    inferEngine.infer(modelWorkerId, img).then((predictions) => {
+    inferEngine.infer(modelWorkerId, img).then((predictions: Prediction[]) => {
+      if (!canvasRef.current) return;
+      
       var ctx = canvasRef.current.getContext("2d");
+      if (!ctx) return;
+      
       ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
 
       for (var i = 0; i < predictions.length; i++) {
@@ -113,6 +127,7 @@ function App() {
       setTimeout(detectFrame, 100 / 3);
     });
   };
+  
   return (
     <div>
       <div style={{ position: "relative" }}>
