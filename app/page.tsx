@@ -19,7 +19,7 @@ function App() {
     if (!modelLoading) {
       setModelLoading(true);
       inferEngine
-        .startWorker("floral-shop-visual-checkout", 3, "zEzlBHBMyhcy70TqD4tF")
+        .startWorker("floral-shop-visual-checkout", 2, "rf_urmfUoKJ7hZhz9bJiQ9xNEtAw883")
         .then((id) => setModelWorkerId(id));
     }
   }, [inferEngine, modelLoading]);
