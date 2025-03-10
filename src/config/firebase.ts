@@ -1,20 +1,28 @@
 // src/config/firebase.ts
-import { initializeApp } from 'firebase/app';
+import { initializeApp } from "firebase/app";
 import { getFirestore } from 'firebase/firestore';
+import { getAnalytics } from "firebase/analytics";
 
 // Your web app's Firebase configuration
-// Replace these values with your actual Firebase project configuration
+// For Firebase JS SDK v7.20.0 and later, measurementId is optional
 const firebaseConfig = {
-  apiKey: "YOUR_API_KEY",
-  authDomain: "YOUR_AUTH_DOMAIN",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_STORAGE_BUCKET",
-  messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
-  appId: "YOUR_APP_ID"
+  apiKey: "AIzaSyCbMN-DfK_-MZhdVJNLH2gh0PUNq0qckNk",
+  authDomain: "flower-shop-transactions.firebaseapp.com",
+  projectId: "flower-shop-transactions",
+  storageBucket: "flower-shop-transactions.firebasestorage.app",
+  messagingSenderId: "16277816248",
+  appId: "1:16277816248:web:64f5c7f25fbaa3acbe054d",
+  measurementId: "G-BWYWCG430B"
 };
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
+// Initialize Analytics - only in browser environment
+let analytics = null;
+if (typeof window !== 'undefined') {
+  analytics = getAnalytics(app);
+}
 export const db = getFirestore(app);
 
+export { analytics };
 export default app;
