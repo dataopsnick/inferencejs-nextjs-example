@@ -54,7 +54,8 @@ function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
-  const previousPredictionsRef = useRef<{[key: string]: boolean}>({});
+  // Updated to store object with arm/scan/disarm states
+  const previousPredictionsRef = useRef<{[key: string]: any}>({});
   const middleLineRef = useRef<number>(0);
 
   useEffect(() => {
@@ -126,29 +127,69 @@ function App() {
     }
   };
 
-  // Check if item has crossed the middle line from right to left
+  // Check if item has crossed the middle line with debounce logic
   const checkItemCrossedMiddle = (prediction: Prediction, frameWidth: number) => {
     const itemId = `${prediction.class}_${prediction.bbox.x.toFixed(0)}_${prediction.bbox.y.toFixed(0)}`;
     const middleX = middleLineRef.current;
     
-    // Get the left edge of the bounding box
-    const leftEdge = prediction.bbox.x - (prediction.bbox.width / 2);
+    // Define arm, scan, and disarm regions (as percentages of frame width)
+    const armRegion = middleX + (frameWidth * 0.15); // 15% to the right of middle
+    const disarmRegion = middleX - (frameWidth * 0.15); // 15% to the left of middle
     
-    // Check if the item has just crossed the middle line from right to left
-    if (leftEdge < middleX && !previousPredictionsRef.current[itemId]) {
-      previousPredictionsRef.current[itemId] = true;
-      
+    // Get left and right edges of the bounding box
+    const leftEdge = prediction.bbox.x - (prediction.bbox.width / 2);
+    const rightEdge = prediction.bbox.x + (prediction.bbox.width / 2);
+    
+    // If this is a new object we haven't seen before, initialize its state
+    if (previousPredictionsRef.current[itemId] === undefined) {
+      previousPredictionsRef.current[itemId] = {
+        armed: false,
+        scanned: false,
+        disarmed: false
+      };
+    }
+    
+    const itemState = previousPredictionsRef.current[itemId];
+    
+    // Step 1: Arm the scanner when right edge is in arm region
+    if (!itemState.armed && rightEdge < armRegion && leftEdge > middleX) {
+      itemState.armed = true;
+      console.log(`Item ${itemId} ARMED`);
+    }
+    
+    // Step 2: Scan the item when it crosses the middle line (only if armed)
+    if (itemState.armed && !itemState.scanned && leftEdge < middleX && rightEdge > middleX) {
+      itemState.scanned = true;
+      console.log(`Item ${itemId} SCANNED`);
       // Process the item
       processItemCheckout(prediction.class);
       return true;
     }
     
-    // Update previous predictions state
-    if (leftEdge >= middleX) {
-      previousPredictionsRef.current[itemId] = false;
+    // Step 3: Disarm the scanner when item fully passes to the left
+    if (itemState.scanned && !itemState.disarmed && rightEdge < disarmRegion) {
+      itemState.disarmed = true;
+      console.log(`Item ${itemId} DISARMED`);
     }
     
-    return false;
+    // Clean up old items that are no longer in frame or have completed the cycle
+    // We'll keep them in memory for a while to prevent immediate re-scanning
+    const cleanupInterval = 60; // frames (approximately 2 seconds at 30fps)
+    
+    if (!itemState.cleanupCounter) {
+      itemState.cleanupCounter = 0;
+    }
+    
+    if (itemState.disarmed) {
+      itemState.cleanupCounter++;
+      
+      if (itemState.cleanupCounter > cleanupInterval) {
+        // Remove the item from tracking after the timeout
+        delete previousPredictionsRef.current[itemId];
+      }
+    }
+    
+    return itemState.scanned && !itemState.disarmed;
   };
 
   // Process item checkout
@@ -224,11 +265,31 @@ function App() {
       
       ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
       
-      // Draw middle line
+      // Define regions
+      const armRegion = middleLineRef.current + (canvasRef.current.width * 0.15);
+      const disarmRegion = middleLineRef.current - (canvasRef.current.width * 0.15);
+      
+      // Draw arm region line (green)
+      ctx.beginPath();
+      ctx.moveTo(armRegion, 0);
+      ctx.lineTo(armRegion, canvasRef.current.height);
+      ctx.strokeStyle = "rgba(0, 255, 0, 0.5)";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      
+      // Draw middle line (red)
       ctx.beginPath();
       ctx.moveTo(middleLineRef.current, 0);
       ctx.lineTo(middleLineRef.current, canvasRef.current.height);
       ctx.strokeStyle = "rgba(255, 0, 0, 0.7)";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      
+      // Draw disarm region line (blue)
+      ctx.beginPath();
+      ctx.moveTo(disarmRegion, 0);
+      ctx.lineTo(disarmRegion, canvasRef.current.height);
+      ctx.strokeStyle = "rgba(0, 0, 255, 0.5)";
       ctx.lineWidth = 2;
       ctx.stroke();
 
