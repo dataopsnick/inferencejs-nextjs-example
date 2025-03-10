@@ -104,7 +104,7 @@ function App() {
         ctx.fillStyle = "rgba(0, 0, 0, 0)";
         ctx.fill();
         ctx.fillStyle = ctx.strokeStyle;
-        ctx.lineWidth = "4";
+        ctx.lineWidth = 4;
         ctx.strokeRect(x, y, width, height);
 
         var text = ctx.measureText(
