@@ -135,7 +135,7 @@ function App() {
     const leftEdge = prediction.bbox.x - (prediction.bbox.width / 2);
     
     // Check if the item has just crossed the middle line from right to left
-    if (leftEdge < middleX && (!previousPredictionsRef.current[itemId] || previousPredictionsRef.current[itemId] === false)) {
+    if (leftEdge < middleX && !previousPredictionsRef.current[itemId]) {
       previousPredictionsRef.current[itemId] = true;
       
       // Process the item
