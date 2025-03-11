@@ -1,7 +1,7 @@
 // src/config/firebase.ts
 import { initializeApp } from "firebase/app";
-import { getFirestore } from 'firebase/firestore';
-import { getAnalytics } from "firebase/analytics";
+import { getFirestore, enableIndexedDbPersistence, connectFirestoreEmulator } from 'firebase/firestore';
+import { getAnalytics, isSupported as isAnalyticsSupported } from "firebase/analytics";
 
 // Your web app's Firebase configuration
 // For Firebase JS SDK v7.20.0 and later, measurementId is optional
@@ -15,14 +15,58 @@ const firebaseConfig = {
   measurementId: "G-BWYWCG430B"
 };
 
-// Initialize Firebase
-const app = initializeApp(firebaseConfig);
-// Initialize Analytics - only in browser environment
+// Initialize Firebase with improved error handling
+let app;
+let db;
 let analytics = null;
-if (typeof window !== 'undefined') {
-  analytics = getAnalytics(app);
-}
-export const db = getFirestore(app);
 
-export { analytics };
+try {
+  console.log("[Firebase] 🔄 Initializing Firebase...");
+  app = initializeApp(firebaseConfig);
+  db = getFirestore(app);
+  
+  // Enable persistence for offline support
+  if (typeof window !== 'undefined') {
+    enableIndexedDbPersistence(db)
+      .then(() => {
+        console.log("[Firebase] ✅ Offline persistence enabled");
+      })
+      .catch((error) => {
+        console.warn("[Firebase] ⚠️ Offline persistence could not be enabled:", error.code);
+      });
+      
+    // Initialize Analytics if supported
+    isAnalyticsSupported().then(supported => {
+      if (supported) {
+        analytics = getAnalytics(app);
+        console.log("[Firebase] ✅ Analytics initialized");
+      } else {
+        console.log("[Firebase] ℹ️ Analytics not supported in this environment");
+      }
+    });
+  }
+  
+  console.log("[Firebase] ✅ Firebase initialized successfully");
+} catch (error) {
+  console.error("[Firebase] ❌ Error initializing Firebase:", error);
+  
+  // Fallback to a basic configuration if initialization fails
+  if (!app || !db) {
+    console.warn("[Firebase] ⚠️ Using fallback Firebase configuration");
+    app = app || initializeApp(firebaseConfig);
+    db = db || getFirestore(app);
+  }
+}
+
+// Connect to emulator if in development mode
+if (process.env.NODE_ENV === 'development' && process.env.NEXT_PUBLIC_USE_FIREBASE_EMULATOR === 'true') {
+  try {
+    connectFirestoreEmulator(db, 'localhost', 8080);
+    console.log("[Firebase] 🧪 Connected to Firestore emulator");
+  } catch (error) {
+    console.error("[Firebase] ❌ Failed to connect to Firestore emulator:", error);
+  }
+}
+
+export { analytics, app, db };
 export default app;

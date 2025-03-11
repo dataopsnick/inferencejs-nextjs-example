@@ -5,7 +5,7 @@ import { InferenceEngine, CVImage, Prediction } from "inferencejs";
 import { useEffect, useRef, useState, useMemo } from "react";
 import { v4 as uuidv4 } from 'uuid';
 import { db } from "../src/config/firebase";
-import { collection, addDoc } from "firebase/firestore";
+import { collection, addDoc, Timestamp } from "firebase/firestore";
 
 // Define interfaces
 interface Transaction {
@@ -43,6 +43,9 @@ function App() {
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [checkoutMessage, setCheckoutMessage] = useState<string>("");
   
+  // Firebase connection status
+  const [firebaseConnected, setFirebaseConnected] = useState<boolean | null>(null);
+  
   // State for tracking stable objects
   const [stableObjects, setStableObjects] = useState<{[key: string]: any}>({});
   // Frame counter for timing
@@ -64,6 +67,50 @@ function App() {
   // Updated to store object with arm/scan/disarm states
   const previousPredictionsRef = useRef<{[key: string]: any}>({});
   const middleLineRef = useRef<number>(0);
+
+  // Monitor device online status and network connectivity
+  useEffect(() => {
+    // Check initial connection
+    setFirebaseConnected(navigator.onLine);
+    
+    // Set up event listeners for online/offline status
+    const handleOnline = () => {
+      console.log("[Firebase] 🟢 Device is online");
+      setFirebaseConnected(true);
+    };
+    
+    const handleOffline = () => {
+      console.log("[Firebase] 🔴 Device is offline");
+      setFirebaseConnected(false);
+    };
+    
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    
+    // Clean up event listeners
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  // Add a connection test when the component mounts
+  useEffect(() => {
+    const testFirebaseConnection = async () => {
+      try {
+        // Try to get the server timestamp (a lightweight operation)
+        const timestamp = Timestamp.now();
+        console.log(`[Firebase] ✅ Connection test successful, server timestamp: ${timestamp.toDate().toISOString()}`);
+        setFirebaseConnected(true);
+      } catch (error) {
+        console.error("[Firebase] ❌ Connection test failed:", error);
+        setFirebaseConnected(false);
+      }
+    };
+    
+    // Run the test
+    testFirebaseConnection();
+  }, []);
 
   useEffect(() => {
     if (!modelLoading) {
@@ -146,40 +193,57 @@ function App() {
     let newTransaction = {...transaction};
     let price = 0;
     
-    console.log(`Processing checkout for item class: ${itemClass}`);
-    
     if (itemClass.includes("red_tulip")) {
       newTransaction.cart_checkout.red_tulip += 1;
       price = priceList["red_tulip_1"] || 0;
-      console.log(`Added red tulip: ${newTransaction.cart_checkout.red_tulip} total, price: ${price}`);
+      console.log(`[Cart] Added red tulip: $${price}`);
     } else if (itemClass.includes("yellow_tulip")) {
       newTransaction.cart_checkout.yellow_tulip += 1;
       price = priceList["yellow_tulip_1"] || 0;
-      console.log(`Added yellow tulip: ${newTransaction.cart_checkout.yellow_tulip} total, price: ${price}`);
+      console.log(`[Cart] Added yellow tulip: $${price}`);
     } else if (itemClass.includes("blue_iris")) {
       newTransaction.cart_checkout.blue_iris += 1;
       price = priceList["blue_iris_1"] || 0;
-      console.log(`Added blue iris: ${newTransaction.cart_checkout.blue_iris} total, price: ${price}`);
+      console.log(`[Cart] Added blue iris: $${price}`);
     } else {
-      console.log(`Unknown item class: ${itemClass}, not adding to cart`);
+      console.log(`[Cart] Unknown item class: ${itemClass}, not adding to cart`);
     }
     
     // Update state
     setTransaction(newTransaction);
     setTxTotal(prevTotal => {
       const newTotal = prevTotal + price;
-      console.log(`Transaction total updated: ${prevTotal.toFixed(2)} -> ${newTotal.toFixed(2)}`);
+      console.log(`[Cart] Transaction total updated: $${newTotal.toFixed(2)}`);
       return newTotal;
     });
   };
 
-  // Handle payment submission
+  // Handle payment submission with enhanced Firebase diagnostics
   const handlePayment = async () => {
     try {
       setIsSubmitting(true);
+      console.log("[Firebase] 📤 Attempting to write transaction to Firestore:", transaction);
       
-      // Add transaction to Firestore
-      await addDoc(collection(db, "transactions"), transaction);
+      // Add connection status check
+      if (!navigator.onLine) {
+        console.error("[Firebase] ❌ Device appears to be offline. Cannot connect to Firebase.");
+        setCheckoutMessage("Cannot connect to payment service. Please check your internet connection.");
+        return;
+      }
+      
+      // Record start time for performance measurement
+      const startTime = performance.now();
+      
+      // Add transaction to Firestore with enhanced logging
+      const docRef = await addDoc(collection(db, "transactions"), transaction);
+      
+      // Calculate operation duration
+      const duration = Math.round(performance.now() - startTime);
+      
+      // Success logging
+      console.log(`[Firebase] ✅ Transaction successfully written to Firestore in ${duration}ms`);
+      console.log(`[Firebase] 📝 Document ID: ${docRef.id}`);
+      console.log(`[Firebase] 📊 Transaction data:`, JSON.stringify(transaction, null, 2));
       
       // Reset transaction
       setTransaction({
@@ -197,8 +261,25 @@ function App() {
       // Clear message after 3 seconds
       setTimeout(() => setCheckoutMessage(""), 3000);
     } catch (error) {
-      console.error("Error submitting payment:", error);
-      setCheckoutMessage("Payment failed. Please try again.");
+      // Enhanced error logging
+      console.error("[Firebase] ❌ Error submitting payment:", error);
+      
+      // Provide more specific error messages based on error types
+      let errorMessage = "Payment failed. Please try again.";
+      
+      if (error instanceof Error) {
+        console.error(`[Firebase] 🔍 Error name: ${error.name}, Message: ${error.message}`);
+        
+        if (error.message.includes("permission-denied")) {
+          errorMessage = "Payment authorization failed. Please try again.";
+        } else if (error.message.includes("unavailable")) {
+          errorMessage = "Payment service is currently unavailable. Please try again later.";
+        } else if (error.message.includes("network")) {
+          errorMessage = "Network error occurred. Please check your internet connection.";
+        }
+      }
+      
+      setCheckoutMessage(errorMessage);
     } finally {
       setIsSubmitting(false);
     }
@@ -341,7 +422,7 @@ function App() {
     return newStableObjects;
   };
 
-  // Check if stable object should trigger checkout
+  // Check if stable object should trigger checkout - with reduced logging
   const checkStableObjectsForCheckout = (stableObj: any, prediction: Prediction, frameWidth: number) => {
     const itemId = stableObj.class;
     const middleX = middleLineRef.current;
@@ -353,27 +434,22 @@ function App() {
     // Get center X position
     const centerX = prediction.bbox.x;
     
-    // Debug position
-    console.log(`Stable ${itemId}: x=${centerX.toFixed(0)}, moving ${stableObj.movingLeft ? 'LEFT ⬅️' : 'RIGHT ➡️'}, Arm: ${armRegion.toFixed(0)}, Middle: ${middleX.toFixed(0)}, Disarm: ${disarmRegion.toFixed(0)}`);
-    
     // Get current checkout state
     const checkoutState = stableObj.checkoutState;
     
     if (!checkoutState) return false;
     
-    // Debug state
-    console.log(`Checkout State: armed=${checkoutState.armed}, scanned=${checkoutState.scanned}, disarmed=${checkoutState.disarmed}`);
-    
     // Step 1: Arm the scanner when the object is between arm line and middle line and moving left
     if (!checkoutState.armed && centerX < armRegion && centerX > middleX && stableObj.movingLeft) {
       checkoutState.armed = true;
-      console.log(`🟢 ARMED: ${itemId} at position ${centerX.toFixed(0)}`);
+      // Removed arming log
     }
     
     // Step 2: Scan the item when it crosses the middle line (only if armed and moving left)
     if (checkoutState.armed && !checkoutState.scanned && centerX <= middleX && stableObj.movingLeft) {
       checkoutState.scanned = true;
-      console.log(`🔴 SCANNED: ${itemId} at position ${centerX.toFixed(0)}`);
+      // Kept only this important log
+      console.log(`🔴 SCANNED: ${itemId}`);
       // Process the item
       processItemCheckout(prediction.class);
       return true;
@@ -382,7 +458,7 @@ function App() {
     // Step 3: Disarm the scanner when object fully passes the disarm line
     if (checkoutState.scanned && !checkoutState.disarmed && centerX < disarmRegion) {
       checkoutState.disarmed = true;
-      console.log(`🔵 DISARMED: ${itemId} at position ${centerX.toFixed(0)}`);
+      // Removed disarming log
     }
     
     // Clean up disarmed objects after a delay
@@ -394,7 +470,7 @@ function App() {
     
     // Reset state if object moves back to the right of the arm line
     if ((checkoutState.armed || checkoutState.scanned || checkoutState.disarmed) && centerX > armRegion) {
-      console.log(`♻️ RESET: ${itemId} moved back to start position`);
+      // Removed reset log
       checkoutState.armed = false;
       checkoutState.scanned = false;
       checkoutState.disarmed = false;
@@ -429,8 +505,10 @@ function App() {
       // Apply LPF and get stable objects
       const stableObjects = trackStableObjects(predictions);
       
-      // Debug frame info
-      console.log(`Frame: ${frameCounterRef.current}, Raw predictions: ${predictions.length}, Stable objects: ${Object.keys(stableObjects).length}`);
+      // Reduce frame info logging
+      if (frameCounterRef.current % 30 === 0) { // Only log every 30 frames (about once per second)
+        console.log(`Frame: ${frameCounterRef.current}, Stable objects: ${Object.keys(stableObjects).length}`);
+      }
       
       // Define regions
       const armRegion = middleLineRef.current + (canvasRef.current.width * 0.15);
@@ -624,6 +702,31 @@ function App() {
             {checkoutMessage}
           </div>
         )}
+      </div>
+      
+      {/* Firebase Connection Status Indicator */}
+      <div 
+        style={{ 
+          position: 'fixed', 
+          top: '10px', 
+          right: '10px',
+          padding: '5px 10px',
+          borderRadius: '4px',
+          backgroundColor: firebaseConnected === null 
+            ? '#888' 
+            : firebaseConnected 
+              ? '#4CAF50' 
+              : '#F44336',
+          color: 'white',
+          fontSize: '12px',
+          boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
+        }}
+      >
+        {firebaseConnected === null 
+          ? '⏳ Connecting...' 
+          : firebaseConnected 
+            ? '🟢 Connected' 
+            : '🔴 Disconnected'}
       </div>
     </div>
   );
