@@ -112,10 +112,13 @@ function App() {
           
           // Calculate middle line position
           middleLineRef.current = width / 2;
+          console.log(`Video dimensions: ${width}x${height}, Middle line set at: ${middleLineRef.current}`);
 
           detectFrame();
         };
       }
+    }).catch(error => {
+      console.error("Error accessing webcam:", error);
     });
   };
 
@@ -129,7 +132,7 @@ function App() {
 
   // Check if item has crossed the middle line with debounce logic
   const checkItemCrossedMiddle = (prediction: Prediction, frameWidth: number) => {
-    const itemId = `${prediction.class}_${prediction.bbox.x.toFixed(0)}_${prediction.bbox.y.toFixed(0)}`;
+    const itemId = `${prediction.class}_${Math.round(prediction.bbox.x)}_${Math.round(prediction.bbox.y)}`;
     const middleX = middleLineRef.current;
     
     // Define arm, scan, and disarm regions (as percentages of frame width)
@@ -140,27 +143,35 @@ function App() {
     const leftEdge = prediction.bbox.x - (prediction.bbox.width / 2);
     const rightEdge = prediction.bbox.x + (prediction.bbox.width / 2);
     
+    // Debug boundaries
+    console.log(`Item: ${prediction.class} - Left: ${leftEdge.toFixed(0)}, Right: ${rightEdge.toFixed(0)}, Middle: ${middleX.toFixed(0)}, Arm: ${armRegion.toFixed(0)}, Disarm: ${disarmRegion.toFixed(0)}`);
+    
     // If this is a new object we haven't seen before, initialize its state
     if (previousPredictionsRef.current[itemId] === undefined) {
+      console.log(`NEW ITEM: ${itemId} - Class: ${prediction.class}`);
       previousPredictionsRef.current[itemId] = {
         armed: false,
         scanned: false,
-        disarmed: false
+        disarmed: false,
+        cleanupCounter: 0
       };
     }
     
     const itemState = previousPredictionsRef.current[itemId];
     
+    // Debug item state
+    console.log(`Item ${itemId} STATE: armed=${itemState.armed}, scanned=${itemState.scanned}, disarmed=${itemState.disarmed}`);
+    
     // Step 1: Arm the scanner when right edge is in arm region
     if (!itemState.armed && rightEdge < armRegion && leftEdge > middleX) {
       itemState.armed = true;
-      console.log(`Item ${itemId} ARMED`);
+      console.log(`🟢 Item ${itemId} ARMED - Right edge ${rightEdge.toFixed(0)} crossed arm region ${armRegion.toFixed(0)}`);
     }
     
     // Step 2: Scan the item when it crosses the middle line (only if armed)
     if (itemState.armed && !itemState.scanned && leftEdge < middleX && rightEdge > middleX) {
       itemState.scanned = true;
-      console.log(`Item ${itemId} SCANNED`);
+      console.log(`🔴 Item ${itemId} SCANNED - Object crossing middle line ${middleX.toFixed(0)}`);
       // Process the item
       processItemCheckout(prediction.class);
       return true;
@@ -169,22 +180,19 @@ function App() {
     // Step 3: Disarm the scanner when item fully passes to the left
     if (itemState.scanned && !itemState.disarmed && rightEdge < disarmRegion) {
       itemState.disarmed = true;
-      console.log(`Item ${itemId} DISARMED`);
+      console.log(`🔵 Item ${itemId} DISARMED - Right edge ${rightEdge.toFixed(0)} past disarm region ${disarmRegion.toFixed(0)}`);
     }
     
     // Clean up old items that are no longer in frame or have completed the cycle
     // We'll keep them in memory for a while to prevent immediate re-scanning
     const cleanupInterval = 60; // frames (approximately 2 seconds at 30fps)
     
-    if (!itemState.cleanupCounter) {
-      itemState.cleanupCounter = 0;
-    }
-    
     if (itemState.disarmed) {
       itemState.cleanupCounter++;
       
       if (itemState.cleanupCounter > cleanupInterval) {
         // Remove the item from tracking after the timeout
+        console.log(`🗑️ Item ${itemId} REMOVED FROM TRACKING - cleanup counter: ${itemState.cleanupCounter}`);
         delete previousPredictionsRef.current[itemId];
       }
     }
@@ -201,22 +209,31 @@ function App() {
     let newTransaction = {...transaction};
     let price = 0;
     
+    console.log(`Processing checkout for item class: ${itemClass}`);
+    
     if (itemClass.includes("red_tulip")) {
       newTransaction.cart_checkout.red_tulip += 1;
       price = priceList["red_tulip_1"] || 0;
+      console.log(`Added red tulip: ${newTransaction.cart_checkout.red_tulip} total, price: ${price}`);
     } else if (itemClass.includes("yellow_tulip")) {
       newTransaction.cart_checkout.yellow_tulip += 1;
       price = priceList["yellow_tulip_1"] || 0;
+      console.log(`Added yellow tulip: ${newTransaction.cart_checkout.yellow_tulip} total, price: ${price}`);
     } else if (itemClass.includes("blue_iris")) {
       newTransaction.cart_checkout.blue_iris += 1;
       price = priceList["blue_iris_1"] || 0;
+      console.log(`Added blue iris: ${newTransaction.cart_checkout.blue_iris} total, price: ${price}`);
+    } else {
+      console.log(`Unknown item class: ${itemClass}, not adding to cart`);
     }
     
     // Update state
     setTransaction(newTransaction);
-    setTxTotal(prevTotal => prevTotal + price);
-    
-    console.log(`Item scanned: ${itemClass}, Price: $${price.toFixed(2)}, New total: $${(txTotal + price).toFixed(2)}`);
+    setTxTotal(prevTotal => {
+      const newTotal = prevTotal + price;
+      console.log(`Transaction total updated: ${prevTotal.toFixed(2)} -> ${newTotal.toFixed(2)}`);
+      return newTotal;
+    });
   };
 
   // Handle payment submission
@@ -265,6 +282,11 @@ function App() {
       
       ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
       
+      // Debug frame info
+      console.log(`Canvas dimensions: ${canvasRef.current.width}x${canvasRef.current.height}`);
+      console.log(`Middle line at: ${middleLineRef.current.toFixed(0)}`);
+      console.log(`Total predictions: ${predictions.length}`);
+      
       // Define regions
       const armRegion = middleLineRef.current + (canvasRef.current.width * 0.15);
       const disarmRegion = middleLineRef.current - (canvasRef.current.width * 0.15);
@@ -293,11 +315,25 @@ function App() {
       ctx.lineWidth = 2;
       ctx.stroke();
 
+      // Draw debug text for region positions
+      ctx.font = "16px monospace";
+      ctx.fillStyle = "white";
+      ctx.fillText(`Arm: ${armRegion.toFixed(0)}`, armRegion - 50, 20);
+      ctx.fillText(`Middle: ${middleLineRef.current.toFixed(0)}`, middleLineRef.current - 50, 20);
+      ctx.fillText(`Disarm: ${disarmRegion.toFixed(0)}`, disarmRegion - 50, 20);
+
       for (var i = 0; i < predictions.length; i++) {
         var prediction = predictions[i];
         
         // Check if item crossed middle line
-        checkItemCrossedMiddle(prediction, canvasRef.current.width);
+        const scanned = checkItemCrossedMiddle(prediction, canvasRef.current.width);
+        
+        // Draw item ID on top of bounding box for debugging
+        const itemId = `${prediction.class}_${Math.round(prediction.bbox.x)}_${Math.round(prediction.bbox.y)}`;
+        const itemState = previousPredictionsRef.current[itemId];
+        const stateText = itemState ? 
+          `A:${itemState.armed ? 1 : 0} S:${itemState.scanned ? 1 : 0} D:${itemState.disarmed ? 1 : 0}` : 
+          'New';
 
         // Draw detections
         ctx.strokeStyle = prediction.color;
@@ -329,6 +365,12 @@ function App() {
           x,
           y - 10
         );
+        
+        // Draw state debug text
+        ctx.fillStyle = "white";
+        ctx.fillRect(x - 2, y - 60, text.width + 60, 30);
+        ctx.fillStyle = "black";
+        ctx.fillText(stateText, x, y - 40);
       }
 
       setTimeout(detectFrame, 100 / 3);
