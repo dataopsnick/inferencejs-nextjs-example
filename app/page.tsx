@@ -5,7 +5,7 @@ import { InferenceEngine, CVImage, Prediction } from "inferencejs";
 import { useEffect, useRef, useState, useMemo } from "react";
 import { v4 as uuidv4 } from 'uuid';
 import { db } from "../src/config/firebase";
-import { collection, addDoc } from "firebase/firestore";
+import { collection, addDoc, Timestamp } from "firebase/firestore";
 
 // Define interfaces
 interface Transaction {
@@ -28,7 +28,7 @@ function App() {
   }, []);
   const [modelWorkerId, setModelWorkerId] = useState<string | null>(null);
   const [modelLoading, setModelLoading] = useState(false);
-  
+
   // Cash register state
   const [transaction, setTransaction] = useState<Transaction>({
     uuid: uuidv4(),
@@ -42,6 +42,16 @@ function App() {
   const [txTotal, setTxTotal] = useState<number>(0);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [checkoutMessage, setCheckoutMessage] = useState<string>("");
+  
+  // Firebase connection status
+  const [firebaseConnected, setFirebaseConnected] = useState<boolean | null>(null);
+  
+  // State for tracking stable objects
+  const [stableObjects, setStableObjects] = useState<{[key: string]: any}>({});
+  // Frame counter for timing
+  const frameCounterRef = useRef<number>(0);
+  // Object history tracking for LPF
+  const objectHistoryRef = useRef<{[key: string]: any}>({});
 
   // Define price list
   const priceList: PriceList = {
@@ -58,11 +68,55 @@ function App() {
   const previousPredictionsRef = useRef<{[key: string]: any}>({});
   const middleLineRef = useRef<number>(0);
 
+  // Monitor device online status and network connectivity
+  useEffect(() => {
+    // Check initial connection
+    setFirebaseConnected(navigator.onLine);
+    
+    // Set up event listeners for online/offline status
+    const handleOnline = () => {
+      console.log("[Firebase] 🟢 Device is online");
+      setFirebaseConnected(true);
+    };
+    
+    const handleOffline = () => {
+      console.log("[Firebase] 🔴 Device is offline");
+      setFirebaseConnected(false);
+    };
+    
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    
+    // Clean up event listeners
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  // Add a connection test when the component mounts
+  useEffect(() => {
+    const testFirebaseConnection = async () => {
+      try {
+        // Try to get the server timestamp (a lightweight operation)
+        const timestamp = Timestamp.now();
+        console.log(`[Firebase] ✅ Connection test successful, server timestamp: ${timestamp.toDate().toISOString()}`);
+        setFirebaseConnected(true);
+      } catch (error) {
+        console.error("[Firebase] ❌ Connection test failed:", error);
+        setFirebaseConnected(false);
+      }
+    };
+    
+    // Run the test
+    testFirebaseConnection();
+  }, []);
+
   useEffect(() => {
     if (!modelLoading) {
       setModelLoading(true);
       inferEngine
-        .startWorker("floral-shop-visual-checkout", 2, "rf_urmfUoKJ7hZhz9bJiQ9xNEtAw883")
+        .startWorker("floral-shop-visual-checkout", 5, "rf_urmfUoKJ7hZhz9bJiQ9xNEtAw883")
         .then((id) => setModelWorkerId(id));
     }
   }, [inferEngine, modelLoading]);
@@ -112,10 +166,13 @@ function App() {
           
           // Calculate middle line position
           middleLineRef.current = width / 2;
+          console.log(`Video dimensions: ${width}x${height}, Middle line set at: ${middleLineRef.current}`);
 
           detectFrame();
         };
       }
+    }).catch(error => {
+      console.error("Error accessing webcam:", error);
     });
   };
 
@@ -125,71 +182,6 @@ function App() {
       audioRef.current.currentTime = 0;
       audioRef.current.play().catch(err => console.error("Error playing sound:", err));
     }
-  };
-
-  // Check if item has crossed the middle line with debounce logic
-  const checkItemCrossedMiddle = (prediction: Prediction, frameWidth: number) => {
-    const itemId = `${prediction.class}_${prediction.bbox.x.toFixed(0)}_${prediction.bbox.y.toFixed(0)}`;
-    const middleX = middleLineRef.current;
-    
-    // Define arm, scan, and disarm regions (as percentages of frame width)
-    const armRegion = middleX + (frameWidth * 0.15); // 15% to the right of middle
-    const disarmRegion = middleX - (frameWidth * 0.15); // 15% to the left of middle
-    
-    // Get left and right edges of the bounding box
-    const leftEdge = prediction.bbox.x - (prediction.bbox.width / 2);
-    const rightEdge = prediction.bbox.x + (prediction.bbox.width / 2);
-    
-    // If this is a new object we haven't seen before, initialize its state
-    if (previousPredictionsRef.current[itemId] === undefined) {
-      previousPredictionsRef.current[itemId] = {
-        armed: false,
-        scanned: false,
-        disarmed: false
-      };
-    }
-    
-    const itemState = previousPredictionsRef.current[itemId];
-    
-    // Step 1: Arm the scanner when right edge is in arm region
-    if (!itemState.armed && rightEdge < armRegion && leftEdge > middleX) {
-      itemState.armed = true;
-      console.log(`Item ${itemId} ARMED`);
-    }
-    
-    // Step 2: Scan the item when it crosses the middle line (only if armed)
-    if (itemState.armed && !itemState.scanned && leftEdge < middleX && rightEdge > middleX) {
-      itemState.scanned = true;
-      console.log(`Item ${itemId} SCANNED`);
-      // Process the item
-      processItemCheckout(prediction.class);
-      return true;
-    }
-    
-    // Step 3: Disarm the scanner when item fully passes to the left
-    if (itemState.scanned && !itemState.disarmed && rightEdge < disarmRegion) {
-      itemState.disarmed = true;
-      console.log(`Item ${itemId} DISARMED`);
-    }
-    
-    // Clean up old items that are no longer in frame or have completed the cycle
-    // We'll keep them in memory for a while to prevent immediate re-scanning
-    const cleanupInterval = 60; // frames (approximately 2 seconds at 30fps)
-    
-    if (!itemState.cleanupCounter) {
-      itemState.cleanupCounter = 0;
-    }
-    
-    if (itemState.disarmed) {
-      itemState.cleanupCounter++;
-      
-      if (itemState.cleanupCounter > cleanupInterval) {
-        // Remove the item from tracking after the timeout
-        delete previousPredictionsRef.current[itemId];
-      }
-    }
-    
-    return itemState.scanned && !itemState.disarmed;
   };
 
   // Process item checkout
@@ -204,28 +196,54 @@ function App() {
     if (itemClass.includes("red_tulip")) {
       newTransaction.cart_checkout.red_tulip += 1;
       price = priceList["red_tulip_1"] || 0;
+      console.log(`[Cart] Added red tulip: $${price}`);
     } else if (itemClass.includes("yellow_tulip")) {
       newTransaction.cart_checkout.yellow_tulip += 1;
       price = priceList["yellow_tulip_1"] || 0;
+      console.log(`[Cart] Added yellow tulip: $${price}`);
     } else if (itemClass.includes("blue_iris")) {
       newTransaction.cart_checkout.blue_iris += 1;
       price = priceList["blue_iris_1"] || 0;
+      console.log(`[Cart] Added blue iris: $${price}`);
+    } else {
+      console.log(`[Cart] Unknown item class: ${itemClass}, not adding to cart`);
     }
     
     // Update state
     setTransaction(newTransaction);
-    setTxTotal(prevTotal => prevTotal + price);
-    
-    console.log(`Item scanned: ${itemClass}, Price: $${price.toFixed(2)}, New total: $${(txTotal + price).toFixed(2)}`);
+    setTxTotal(prevTotal => {
+      const newTotal = prevTotal + price;
+      console.log(`[Cart] Transaction total updated: $${newTotal.toFixed(2)}`);
+      return newTotal;
+    });
   };
 
-  // Handle payment submission
+  // Handle payment submission with enhanced Firebase diagnostics
   const handlePayment = async () => {
     try {
       setIsSubmitting(true);
+      console.log("[Firebase] 📤 Attempting to write transaction to Firestore:", transaction);
       
-      // Add transaction to Firestore
-      await addDoc(collection(db, "transactions"), transaction);
+      // Add connection status check
+      if (!navigator.onLine) {
+        console.error("[Firebase] ❌ Device appears to be offline. Cannot connect to Firebase.");
+        setCheckoutMessage("Cannot connect to payment service. Please check your internet connection.");
+        return;
+      }
+      
+      // Record start time for performance measurement
+      const startTime = performance.now();
+      
+      // Add transaction to Firestore with enhanced logging
+      const docRef = await addDoc(collection(db, "transactions"), transaction);
+      
+      // Calculate operation duration
+      const duration = Math.round(performance.now() - startTime);
+      
+      // Success logging
+      console.log(`[Firebase] ✅ Transaction successfully written to Firestore in ${duration}ms`);
+      console.log(`[Firebase] 📝 Document ID: ${docRef.id}`);
+      console.log(`[Firebase] 📊 Transaction data:`, JSON.stringify(transaction, null, 2));
       
       // Reset transaction
       setTransaction({
@@ -243,11 +261,229 @@ function App() {
       // Clear message after 3 seconds
       setTimeout(() => setCheckoutMessage(""), 3000);
     } catch (error) {
-      console.error("Error submitting payment:", error);
-      setCheckoutMessage("Payment failed. Please try again.");
+      // Enhanced error logging
+      console.error("[Firebase] ❌ Error submitting payment:", error);
+      
+      // Provide more specific error messages based on error types
+      let errorMessage = "Payment failed. Please try again.";
+      
+      if (error instanceof Error) {
+        console.error(`[Firebase] 🔍 Error name: ${error.name}, Message: ${error.message}`);
+        
+        if (error.message.includes("permission-denied")) {
+          errorMessage = "Payment authorization failed. Please try again.";
+        } else if (error.message.includes("unavailable")) {
+          errorMessage = "Payment service is currently unavailable. Please try again later.";
+        } else if (error.message.includes("network")) {
+          errorMessage = "Network error occurred. Please check your internet connection.";
+        }
+      }
+      
+      setCheckoutMessage(errorMessage);
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  // Apply low-pass filter and track stable objects
+  const trackStableObjects = (predictions: Prediction[]) => {
+    // Low-pass filter configuration
+    const alpha = 0.3; // Filter weight (lower = more smoothing)
+    const minDetections = 3; // Minimum number of detections before considering an object stable
+    const maxMissingFrames = 15; // Maximum number of frames an object can be missing before removing it
+    const confidenceThreshold = 0.4; // Minimum confidence to consider a detection valid
+    
+    // Current frame objects by class - used to track which objects are seen this frame
+    const currentFrameObjects: {[key: string]: boolean} = {};
+    
+    // Process current predictions
+    predictions.forEach(prediction => {
+      // Skip low confidence detections
+      if (prediction.confidence < confidenceThreshold) return;
+      
+      // Create a class-based ID (focus on flower type, not exact position)
+      const classId = prediction.class;
+      
+      // Mark as seen this frame
+      currentFrameObjects[classId] = true;
+      
+      // Initialize or update object history
+      if (!objectHistoryRef.current[classId]) {
+        objectHistoryRef.current[classId] = {
+          class: prediction.class,
+          detectionCount: 1,
+          missingFrames: 0,
+          lastSeen: frameCounterRef.current,
+          positions: [{
+            x: prediction.bbox.x,
+            y: prediction.bbox.y,
+            width: prediction.bbox.width,
+            height: prediction.bbox.height
+          }],
+          filteredPosition: {
+            x: prediction.bbox.x,
+            y: prediction.bbox.y, 
+            width: prediction.bbox.width,
+            height: prediction.bbox.height
+          },
+          previousX: prediction.bbox.x,
+          movingLeft: false,
+          checkoutState: {
+            armed: false,
+            scanned: false,
+            disarmed: false,
+            cleanupCounter: 0
+          }
+        };
+      } else {
+        const objHistory = objectHistoryRef.current[classId];
+        
+        // Update detection stats
+        objHistory.detectionCount += 1;
+        objHistory.missingFrames = 0;
+        objHistory.lastSeen = frameCounterRef.current;
+        
+        // Calculate if moving left (lower X value means moving left)
+        const currentX = prediction.bbox.x;
+        
+        // Determine direction with some hysteresis to prevent rapid changes
+        // Only change direction if moved at least 3 pixels in the new direction
+        if (currentX < objHistory.previousX - 3) {
+          objHistory.movingLeft = true;
+        } else if (currentX > objHistory.previousX + 3) {
+          objHistory.movingLeft = false;
+        }
+        
+        // Store current position for next comparison
+        objHistory.previousX = currentX;
+        
+        // Store raw position
+        objHistory.positions.push({
+          x: prediction.bbox.x,
+          y: prediction.bbox.y,
+          width: prediction.bbox.width,
+          height: prediction.bbox.height
+        });
+        
+        // Limit position history
+        if (objHistory.positions.length > 10) {
+          objHistory.positions.shift();
+        }
+        
+        // Apply low-pass filter to position
+        objHistory.filteredPosition = {
+          x: objHistory.filteredPosition.x * (1 - alpha) + prediction.bbox.x * alpha,
+          y: objHistory.filteredPosition.y * (1 - alpha) + prediction.bbox.y * alpha,
+          width: objHistory.filteredPosition.width * (1 - alpha) + prediction.bbox.width * alpha,
+          height: objHistory.filteredPosition.height * (1 - alpha) + prediction.bbox.height * alpha
+        };
+      }
+    });
+    
+    // Update missing frames count for objects not seen in this frame
+    Object.keys(objectHistoryRef.current).forEach(id => {
+      if (!currentFrameObjects[id]) {
+        objectHistoryRef.current[id].missingFrames += 1;
+      }
+    });
+    
+    // Remove objects that haven't been seen for too long
+    Object.keys(objectHistoryRef.current).forEach(id => {
+      if (objectHistoryRef.current[id].missingFrames > maxMissingFrames) {
+        console.log(`🗑️ Removing unstable object ${id} - missing for ${objectHistoryRef.current[id].missingFrames} frames`);
+        delete objectHistoryRef.current[id];
+      }
+    });
+    
+    // Create a map of stable objects
+    const newStableObjects: {[key: string]: any} = {};
+    
+    Object.keys(objectHistoryRef.current).forEach(id => {
+      const obj = objectHistoryRef.current[id];
+      
+      // Only include objects that have been detected enough times
+      if (obj.detectionCount >= minDetections) {
+        newStableObjects[id] = {
+          class: obj.class,
+          bbox: {
+            x: obj.filteredPosition.x,
+            y: obj.filteredPosition.y,
+            width: obj.filteredPosition.width,
+            height: obj.filteredPosition.height
+          },
+          missingFrames: obj.missingFrames,
+          detectionCount: obj.detectionCount,
+          movingLeft: obj.movingLeft,
+          checkoutState: obj.checkoutState
+        };
+      }
+    });
+    
+    return newStableObjects;
+  };
+
+  // Check if stable object should trigger checkout - with reduced logging
+  const checkStableObjectsForCheckout = (stableObj: any, prediction: Prediction, frameWidth: number) => {
+    const itemId = stableObj.class;
+    const middleX = middleLineRef.current;
+    
+    // Define arm, scan, and disarm regions
+    const armRegion = middleX + (frameWidth * 0.15); // 15% to the right of middle
+    const disarmRegion = middleX - (frameWidth * 0.15); // 15% to the left of middle
+    
+    // Get center X position
+    const centerX = prediction.bbox.x;
+    
+    // Get current checkout state
+    const checkoutState = stableObj.checkoutState;
+    
+    if (!checkoutState) return false;
+    
+    // Step 1: Arm the scanner when the object is between arm line and middle line and moving left
+    if (!checkoutState.armed && centerX < armRegion && centerX > middleX && stableObj.movingLeft) {
+      checkoutState.armed = true;
+      // Removed arming log
+    }
+    
+    // Step 2: Scan the item when it crosses the middle line (only if armed and moving left)
+    if (checkoutState.armed && !checkoutState.scanned && centerX <= middleX && stableObj.movingLeft) {
+      checkoutState.scanned = true;
+      // Kept only this important log
+      console.log(`🔴 SCANNED: ${itemId}`);
+      // Process the item
+      processItemCheckout(prediction.class);
+      return true;
+    }
+    
+    // Step 3: Disarm the scanner when object fully passes the disarm line
+    if (checkoutState.scanned && !checkoutState.disarmed && centerX < disarmRegion) {
+      checkoutState.disarmed = true;
+      // Removed disarming log
+    }
+    
+    // Clean up disarmed objects after a delay
+    const cleanupInterval = 60; // frames (approximately 2 seconds at 30fps)
+    
+    if (checkoutState.disarmed) {
+      checkoutState.cleanupCounter++;
+    }
+    
+    // Reset state if object moves back to the right of the arm line
+    if ((checkoutState.armed || checkoutState.scanned || checkoutState.disarmed) && centerX > armRegion) {
+      // Removed reset log
+      checkoutState.armed = false;
+      checkoutState.scanned = false;
+      checkoutState.disarmed = false;
+      checkoutState.cleanupCounter = 0;
+    }
+    
+    return checkoutState.scanned && !checkoutState.disarmed;
+  };
+
+  // Legacy function - keeping for reference but no longer being used directly
+  const checkItemCrossedMiddle = (prediction: Prediction, frameWidth: number) => {
+    // Now handled by checkStableObjectsForCheckout
+    return false;
   };
 
   const detectFrame = () => {
@@ -260,10 +496,19 @@ function App() {
     inferEngine.infer(modelWorkerId, img).then((predictions: Prediction[]) => {
       if (!canvasRef.current) return;
       
-      var ctx = canvasRef.current.getContext("2d");
+      const ctx = canvasRef.current.getContext("2d");
       if (!ctx) return;
       
       ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+      frameCounterRef.current++;
+      
+      // Apply LPF and get stable objects
+      const stableObjects = trackStableObjects(predictions);
+      
+      // Reduce frame info logging
+      if (frameCounterRef.current % 30 === 0) { // Only log every 30 frames (about once per second)
+        console.log(`Frame: ${frameCounterRef.current}, Stable objects: ${Object.keys(stableObjects).length}`);
+      }
       
       // Define regions
       const armRegion = middleLineRef.current + (canvasRef.current.width * 0.15);
@@ -293,48 +538,108 @@ function App() {
       ctx.lineWidth = 2;
       ctx.stroke();
 
+      // Draw debug text for region positions
+      ctx.font = "16px monospace";
+      ctx.fillStyle = "white";
+      ctx.fillText(`Arm: ${armRegion.toFixed(0)}`, armRegion - 50, 20);
+      ctx.fillText(`Middle: ${middleLineRef.current.toFixed(0)}`, middleLineRef.current - 50, 20);
+      ctx.fillText(`Disarm: ${disarmRegion.toFixed(0)}`, disarmRegion - 50, 20);
+
+      // First, draw raw detections with light opacity
       for (var i = 0; i < predictions.length; i++) {
         var prediction = predictions[i];
         
-        // Check if item crossed middle line
-        checkItemCrossedMiddle(prediction, canvasRef.current.width);
-
-        // Draw detections
-        ctx.strokeStyle = prediction.color;
-
+        // Draw raw detections with light opacity
         var x = prediction.bbox.x - prediction.bbox.width / 2;
         var y = prediction.bbox.y - prediction.bbox.height / 2;
         var width = prediction.bbox.width;
         var height = prediction.bbox.height;
 
+        ctx.beginPath();
         ctx.rect(x, y, width, height);
-        ctx.fillStyle = "rgba(0, 0, 0, 0)";
-        ctx.fill();
-        ctx.fillStyle = ctx.strokeStyle;
-        ctx.lineWidth = 4;
-        ctx.strokeRect(x, y, width, height);
+        ctx.strokeStyle = `rgba(${parseInt(prediction.color.slice(1, 3), 16)}, ${parseInt(prediction.color.slice(3, 5), 16)}, ${parseInt(prediction.color.slice(5, 7), 16)}, 0.3)`;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+      
+      // Then draw stable objects and process them
+      Object.keys(stableObjects).forEach(objId => {
+        const stableObj = stableObjects[objId];
+        
+        // Create a stable prediction object to match the original format
+        const stablePrediction = {
+          class: stableObj.class,
+          bbox: stableObj.bbox,
+          color: "#00FF00", // Green for stable objects
+          confidence: 1.0 // We've already filtered by confidence
+        };
+        
+        // Fix: Add non-null assertion to satisfy TypeScript
+        checkStableObjectsForCheckout(stableObj, stablePrediction, canvasRef.current!.width);    
+        
+        // Draw stable object bounding box
+        var x = stableObj.bbox.x - stableObj.bbox.width / 2;
+        var y = stableObj.bbox.y - stableObj.bbox.height / 2;
+        var width = stableObj.bbox.width;
+        var height = stableObj.bbox.height;
 
-        var text = ctx.measureText(
-          prediction.class + " " + Math.round(prediction.confidence * 100) + "%"
-        );
-        ctx.fillStyle = ctx.strokeStyle;
-        ctx.fillRect(x - 2, y - 30, text.width + 4, 30);
+        // Color based on checkout state
+        let boxColor = "#00FF00"; // Default green
+        if (stableObj.checkoutState) {
+          if (stableObj.checkoutState.scanned && !stableObj.checkoutState.disarmed) {
+            boxColor = "#FF0000"; // Red when being scanned
+          } else if (stableObj.checkoutState.armed && !stableObj.checkoutState.scanned) {
+            boxColor = "#FFA500"; // Orange when armed
+          } else if (stableObj.checkoutState.disarmed) {
+            boxColor = "#0000FF"; // Blue when disarmed
+          }
+        }
+
+        ctx.beginPath();
+        ctx.rect(x, y, width, height);
+        ctx.strokeStyle = boxColor;
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        
+        // Draw stable object label
+        ctx.fillStyle = boxColor;
+        ctx.fillRect(x - 2, y - 30, 150, 30);
         ctx.font = "15px monospace";
         ctx.fillStyle = "black";
         ctx.fillText(
-          prediction.class +
-            " " +
-            Math.round(prediction.confidence * 100) +
-            "%",
+          `${stableObj.class}`,
           x,
           y - 10
         );
-      }
+        
+        // Get tracking state
+        const stateText = stableObj.checkoutState ? 
+          `A:${stableObj.checkoutState.armed ? 1 : 0} S:${stableObj.checkoutState.scanned ? 1 : 0} D:${stableObj.checkoutState.disarmed ? 1 : 0}` : 
+          'New';
+        
+        // Draw state debug text
+        ctx.fillStyle = "#FFFF00";
+        ctx.fillRect(x - 2, y - 60, 120, 30);
+        ctx.fillStyle = "black";
+        ctx.fillText(stateText, x, y - 40);
+        
+        // Draw movement indicator
+        if (stableObj.movingLeft) {
+          ctx.fillStyle = "#FF00FF";
+          ctx.fillText("⬅️ LEFT", x - 2, y - 70);
+        } else {
+          ctx.fillStyle = "#00FFFF"; 
+          ctx.fillText("RIGHT ➡️", x - 2, y - 70);
+        }
+      });
 
+      setTimeout(detectFrame, 100 / 3);
+    }).catch(err => {
+      console.error("Inference error:", err);
       setTimeout(detectFrame, 100 / 3);
     });
   };
-  
+
   return (
     <div>
       <div style={{ position: "relative" }}>
@@ -397,6 +702,31 @@ function App() {
             {checkoutMessage}
           </div>
         )}
+      </div>
+      
+      {/* Firebase Connection Status Indicator */}
+      <div 
+        style={{ 
+          position: 'fixed', 
+          top: '10px', 
+          right: '10px',
+          padding: '5px 10px',
+          borderRadius: '4px',
+          backgroundColor: firebaseConnected === null 
+            ? '#888' 
+            : firebaseConnected 
+              ? '#4CAF50' 
+              : '#F44336',
+          color: 'white',
+          fontSize: '12px',
+          boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
+        }}
+      >
+        {firebaseConnected === null 
+          ? '⏳ Connecting...' 
+          : firebaseConnected 
+            ? '🟢 Connected' 
+            : '🔴 Disconnected'}
       </div>
     </div>
   );
