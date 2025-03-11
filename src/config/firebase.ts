@@ -1,6 +1,6 @@
 // src/config/firebase.ts
 import { initializeApp } from "firebase/app";
-import { getFirestore, enableIndexedDbPersistence, connectFirestoreEmulator } from 'firebase/firestore';
+import { getFirestore, enableIndexedDbPersistence, connectFirestoreEmulator, Firestore } from 'firebase/firestore';
 import { getAnalytics, isSupported as isAnalyticsSupported } from "firebase/analytics";
 
 // Your web app's Firebase configuration
@@ -16,14 +16,12 @@ const firebaseConfig = {
 };
 
 // Initialize Firebase with improved error handling
-let app;
-let db;
+let app = initializeApp(firebaseConfig);
+let db: Firestore = getFirestore(app);
 let analytics = null;
 
 try {
   console.log("[Firebase] 🔄 Initializing Firebase...");
-  app = initializeApp(firebaseConfig);
-  db = getFirestore(app);
   
   // Enable persistence for offline support
   if (typeof window !== 'undefined') {
@@ -49,13 +47,6 @@ try {
   console.log("[Firebase] ✅ Firebase initialized successfully");
 } catch (error) {
   console.error("[Firebase] ❌ Error initializing Firebase:", error);
-  
-  // Fallback to a basic configuration if initialization fails
-  if (!app || !db) {
-    console.warn("[Firebase] ⚠️ Using fallback Firebase configuration");
-    app = app || initializeApp(firebaseConfig);
-    db = db || getFirestore(app);
-  }
 }
 
 // Connect to emulator if in development mode
@@ -68,5 +59,6 @@ if (process.env.NODE_ENV === 'development' && process.env.NEXT_PUBLIC_USE_FIREBA
   }
 }
 
-export { analytics, app, db };
+export { analytics, app };
+export { db };
 export default app;
