@@ -497,8 +497,9 @@ function App() {
           confidence: 1.0 // We've already filtered by confidence
         };
         
-        // Process checkout logic
-        checkStableObjectsForCheckout(stableObj, stablePrediction, canvasRef.current.width);
+        // Process checkout logic - ensure canvasRef.current exists
+        if (canvasRef.current) {
+          checkStableObjectsForCheckout(stableObj, stablePrediction, canvasRef.current.width);
         
         // Draw stable object bounding box
         var x = stableObj.bbox.x - stableObj.bbox.width / 2;
@@ -554,6 +555,7 @@ function App() {
           ctx.fillStyle = "#00FFFF"; 
           ctx.fillText("RIGHT ➡️", x - 2, y - 70);
         }
+      }
       });
 
       setTimeout(detectFrame, 100 / 3);
