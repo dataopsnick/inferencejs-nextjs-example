@@ -496,7 +496,8 @@ function App() {
           confidence: 1.0 // We've already filtered by confidence
         };
         
-        checkStableObjectsForCheckout(stableObj, stablePrediction, canvasRef.current.width);
+        // Fix: Add non-null assertion to satisfy TypeScript
+        checkStableObjectsForCheckout(stableObj, stablePrediction, canvasRef.current!.width);    
         
         // Draw stable object bounding box
         var x = stableObj.bbox.x - stableObj.bbox.width / 2;
