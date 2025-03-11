@@ -264,7 +264,6 @@ function App() {
         
         // Calculate if moving left (lower X value means moving left)
         const currentX = prediction.bbox.x;
-        const wasMovingLeft = objHistory.movingLeft;
         
         // Determine direction with some hysteresis to prevent rapid changes
         // Only change direction if moved at least 3 pixels in the new direction
@@ -421,7 +420,7 @@ function App() {
     inferEngine.infer(modelWorkerId, img).then((predictions: Prediction[]) => {
       if (!canvasRef.current) return;
       
-      var ctx = canvasRef.current.getContext("2d");
+      const ctx = canvasRef.current.getContext("2d");
       if (!ctx) return;
       
       ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
@@ -497,9 +496,7 @@ function App() {
           confidence: 1.0 // We've already filtered by confidence
         };
         
-        // Process checkout logic - ensure canvasRef.current exists
-        if (canvasRef.current) {
-          checkStableObjectsForCheckout(stableObj, stablePrediction, canvasRef.current.width);
+        checkStableObjectsForCheckout(stableObj, stablePrediction, canvasRef.current.width);
         
         // Draw stable object bounding box
         var x = stableObj.bbox.x - stableObj.bbox.width / 2;
@@ -555,7 +552,6 @@ function App() {
           ctx.fillStyle = "#00FFFF"; 
           ctx.fillText("RIGHT ➡️", x - 2, y - 70);
         }
-      }
       });
 
       setTimeout(detectFrame, 100 / 3);
